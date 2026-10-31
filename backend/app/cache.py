@@ -21,34 +21,37 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
 
 def init_db(db_path: Optional[str] = None) -> None:
     """Initialize the cache schema and configure WAL mode for high concurrency."""
-    with get_connection(db_path) as conn:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS pr_cache (
-                username TEXT NOT NULL,
-                since TEXT NOT NULL,
-                until TEXT NOT NULL,
-                data TEXT NOT NULL,
-                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (username, since, until)
+    try:
+        with get_connection(db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pr_cache (
+                    username TEXT NOT NULL,
+                    since TEXT NOT NULL,
+                    until TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (username, since, until)
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS repo_cache (
-                repo TEXT NOT NULL,
-                since TEXT NOT NULL,
-                until TEXT NOT NULL,
-                data TEXT NOT NULL,
-                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (repo, since, until)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS repo_cache (
+                    repo TEXT NOT NULL,
+                    since TEXT NOT NULL,
+                    until TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (repo, since, until)
+                )
+                """
             )
-            """
-        )
-        conn.commit()
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Cache database initialization warning: %s", exc)
 
 def get_cached_prs(
     username: str,
@@ -57,23 +60,27 @@ def get_cached_prs(
     db_path: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Retrieve cached raw PR records for a user and date window, or None if miss."""
-    init_db(db_path)
     clean_user = username.strip().lower()
     clean_since = (since or "").strip()
     clean_until = (until or "").strip()
 
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT data FROM pr_cache WHERE username = ? AND since = ? AND until = ?",
-            (clean_user, clean_since, clean_until),
-        )
-        row = cursor.fetchone()
-        if row:
-            try:
-                return json.loads(row["data"])
-            except json.JSONDecodeError:
-                return None
+    try:
+        init_db(db_path)
+        with get_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT data FROM pr_cache WHERE username = ? AND since = ? AND until = ?",
+                (clean_user, clean_since, clean_until),
+            )
+            row = cursor.fetchone()
+            if row:
+                try:
+                    return json.loads(row["data"])
+                except json.JSONDecodeError:
+                    return None
+    except Exception as exc:
+        logger.warning("Cache read failed for user '%s': %s", clean_user, exc)
+        return None
     return None
 
 def set_cached_prs(
@@ -84,24 +91,27 @@ def set_cached_prs(
     db_path: Optional[str] = None,
 ) -> None:
     """Save raw PR records to cache for a given user and date window."""
-    init_db(db_path)
     clean_user = username.strip().lower()
     clean_since = (since or "").strip()
     clean_until = (until or "").strip()
     payload = json.dumps(prs if prs is not None else [])
 
-    with get_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO pr_cache (username, since, until, data, cached_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(username, since, until) DO UPDATE SET
-                data = excluded.data,
-                cached_at = CURRENT_TIMESTAMP
-            """,
-            (clean_user, clean_since, clean_until, payload),
-        )
-        conn.commit()
+    try:
+        init_db(db_path)
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO pr_cache (username, since, until, data, cached_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(username, since, until) DO UPDATE SET
+                    data = excluded.data,
+                    cached_at = CURRENT_TIMESTAMP
+                """,
+                (clean_user, clean_since, clean_until, payload),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Cache write failed for user '%s': %s", clean_user, exc)
 
 def get_cached_repo_prs(
     repo: str,
@@ -110,23 +120,27 @@ def get_cached_repo_prs(
     db_path: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Retrieve cached raw PR records for a repository and date window."""
-    init_db(db_path)
     clean_repo = repo.strip().lower()
     clean_since = (since or "").strip()
     clean_until = (until or "").strip()
 
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT data FROM repo_cache WHERE repo = ? AND since = ? AND until = ?",
-            (clean_repo, clean_since, clean_until),
-        )
-        row = cursor.fetchone()
-        if row:
-            try:
-                return json.loads(row["data"])
-            except json.JSONDecodeError:
-                return None
+    try:
+        init_db(db_path)
+        with get_connection(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT data FROM repo_cache WHERE repo = ? AND since = ? AND until = ?",
+                (clean_repo, clean_since, clean_until),
+            )
+            row = cursor.fetchone()
+            if row:
+                try:
+                    return json.loads(row["data"])
+                except json.JSONDecodeError:
+                    return None
+    except Exception as exc:
+        logger.warning("Cache read failed for repo '%s': %s", clean_repo, exc)
+        return None
     return None
 
 def set_cached_repo_prs(
@@ -137,24 +151,27 @@ def set_cached_repo_prs(
     db_path: Optional[str] = None,
 ) -> None:
     """Save raw PR records to cache for a repository and date window."""
-    init_db(db_path)
     clean_repo = repo.strip().lower()
     clean_since = (since or "").strip()
     clean_until = (until or "").strip()
     payload = json.dumps(prs if prs is not None else [])
 
-    with get_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO repo_cache (repo, since, until, data, cached_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(repo, since, until) DO UPDATE SET
-                data = excluded.data,
-                cached_at = CURRENT_TIMESTAMP
-            """,
-            (clean_repo, clean_since, clean_until, payload),
-        )
-        conn.commit()
+    try:
+        init_db(db_path)
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO repo_cache (repo, since, until, data, cached_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(repo, since, until) DO UPDATE SET
+                    data = excluded.data,
+                    cached_at = CURRENT_TIMESTAMP
+                """,
+                (clean_repo, clean_since, clean_until, payload),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Cache write failed for repo '%s': %s", clean_repo, exc)
 
 def clear_cache(
     username: Optional[str] = None,

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any, Optional
 from pydantic import AliasChoices, Field, field_validator
@@ -18,7 +19,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT"),
         description="GitHub Personal Access Token for querying GraphQL & REST APIs without rate limits.",
     )
-    CACHE_DB_PATH: str = str(BASE_DIR / "cache.db")
+    CACHE_DB_PATH: str = Field(
+        default="/tmp/cache.db" if os.environ.get("VERCEL") else str(BASE_DIR / "cache.db"),
+        validation_alias=AliasChoices("CACHE_DB_PATH", "SQLITE_DB_PATH"),
+        description="Path to SQLite cache database file (uses /tmp on Vercel serverless).",
+    )
 
     @field_validator("GITHUB_TOKEN", mode="before")
     @classmethod
