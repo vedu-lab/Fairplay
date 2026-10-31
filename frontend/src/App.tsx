@@ -20,6 +20,7 @@ import {
 import {
   LeaderboardEntry,
   VerifyTokenResponse,
+  fetchLeaderboard,
   getStoredToken,
   setStoredToken,
   verifyToken,
@@ -74,6 +75,21 @@ function App() {
   const handleContributorSelected = (contributor: LeaderboardEntry) => {
     setSelectedContributor(contributor);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleSelectUserByName = async (username: string) => {
+    try {
+      const data = await fetchLeaderboard({
+        usernames: [username],
+        customToken: currentToken,
+      });
+      if (data && data.length > 0) {
+        setSelectedContributor(data[0]);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    } catch {
+      setActiveTab('leaderboard');
+    }
   };
 
   return (
@@ -257,10 +273,7 @@ function App() {
             ) : (
               /* View 3: Tracked Repositories View with Changelogs */
               <TrackedRepos
-                onSelectContributor={(username) => {
-                  // Switch to leaderboard and select user if present
-                  setActiveTab('leaderboard');
-                }}
+                onSelectContributor={handleSelectUserByName}
               />
             )}
           </div>

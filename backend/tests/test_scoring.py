@@ -426,3 +426,69 @@ def test_score_result_dual_compatibility(clean_merged_pr):
     assert score == 100
     assert isinstance(breakdown, dict)
     assert breakdown["merge_legitimacy"] == 40
+
+
+def test_sockpuppet_merge_in_self_owned_repo_scores_zero():
+    """
+    If author owns the repo, even if merged by another account (alt/bot),
+    it must receive 0 merge legitimacy points.
+    """
+    sockpuppet_pr = {
+        "author": "bob",
+        "repo_owner": "bob",
+        "merged": True,
+        "merged_by": "alice_alt",  # Alt account merges author's personal repo
+    }
+    pts, reason = calculate_merge_legitimacy(sockpuppet_pr)
+    assert pts == 0
+    assert "Self-owned repo merge" in reason
+
+
+def test_rest_fallback_external_merge_scores_full_points():
+    """
+    If merged into an independent repository but merged_by is absent (REST fallback),
+    award full 40 merge legitimacy points.
+    """
+    rest_pr = {
+        "author": "alice",
+        "repo_owner": "facebook",
+        "merged": True,
+        "merged_by": None,  # REST search does not provide merged_by
+    }
+    pts, reason = calculate_merge_legitimacy(rest_pr)
+    assert pts == 40
+    assert reason is None
+
+
+def test_external_fresh_throwaway_repo_penalized():
+    """
+    External repositories created < 7 days before the PR (suspected alt throwaway)
+    must receive reduced trust score.
+    """
+    fresh_ext_pr = {
+        "author": "bob",
+        "repo_owner": "bob_alt",
+        "created_at": "2026-10-20T12:00:00Z",
+        "repo_created_at": "2026-10-19T12:00:00Z",  # 1 day old!
+    }
+    pts, reason = calculate_repo_trust(fresh_ext_pr)
+    assert pts == 4
+    assert "suspected alt throwaway" in reason
+
+
+def test_unestablished_fork_penalized():
+    """
+    Forks with 0 stars must receive reduced repo trust score.
+    """
+    fork_pr = {
+        "author": "alice",
+        "repo_owner": "someone_else",
+        "repo_is_fork": True,
+        "repo_stars": 0,
+        "created_at": "2026-10-20T12:00:00Z",
+        "repo_created_at": "2025-01-01T00:00:00Z",
+    }
+    pts, reason = calculate_repo_trust(fork_pr)
+    assert pts == 10
+    assert "External fork with zero community stars" in reason
+

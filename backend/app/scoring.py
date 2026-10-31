@@ -2,15 +2,15 @@
 FairPlay PR Scoring and Gaming Detection Engine.
 
 Implements the 4-signal weighted rubric (0-100):
-  - 40% Merge legitimacy (merged by independent maintainer vs self-merged / open)
+  - 40% Merge legitimacy (merged by independent maintainer vs self-merged / open / self-owned)
   - 20% Review engagement (real review comments & discussion vs rubber-stamped)
-  - 20% Change substance (meaningful code change vs whitespace/README-only edit)
-  - 20% Repo trust (established/active repo vs throwaway self-created repo)
+  - 20% Change substance (meaningful code change vs whitespace/README-only edit/dump)
+  - 20% Repo trust (established/active repo vs throwaway self-created or fresh alt repo)
 
 Enriches every evaluated PR with:
   - Exact points gained vs points forfeited/lost across each dimension
   - Specific plain-language reasons for points earned and lost
-  - Modular rules pass to flag gaming patterns
+  - Modular rules pass to flag gaming patterns (self-owned, self-merged, whitespace burst, duplicate burst)
   - Contributor-level aggregates for graphical visualization (waterfalls, radar/bar charts)
   - Repository-level changelog and lead contributor rankings
 """
@@ -52,22 +52,35 @@ def calculate_merge_legitimacy(pr: Dict[str, Any]) -> Tuple[int, Optional[str]]:
     40% Merge legitimacy:
       - merged AND merged_by != author -> full points (40)
       - merged by author or still open -> 0
+      - merged inside author's personal repository -> 0 (prevents sockpuppet/alt merge gaming)
+      - if merged into independent repo and merged_by is absent (REST fallback) -> 40
     Returns (score, loss_reason).
     """
     author = (pr.get("author") or "").strip().lower()
     merged = bool(pr.get("merged", False))
     merged_by = (pr.get("merged_by") or "").strip().lower()
+    repo_owner = (pr.get("repo_owner") or "").strip().lower()
 
     if not merged:
         return 0, "PR remains open or was closed unmerged (0/40 pts)"
 
-    if not merged_by:
-        return 0, "Unverified merger: No independent merger recorded (0/40 pts)"
-
-    if merged_by == author:
+    # Explicit self-merge
+    if merged_by and merged_by == author:
         return 0, f"Self-merged: Merged by author '{author}' without independent review (0/40 pts)"
 
-    return 40, None
+    # Sockpuppet or bot merge inside author's self-owned repo
+    if repo_owner and author and repo_owner == author:
+        return 0, f"Self-owned repo merge: Merged inside author's personal repository '{author}' (0/40 pts)"
+
+    # Merged by independent third-party maintainer
+    if merged_by and merged_by != author:
+        return 40, None
+
+    # Merged into independent repository (covers REST v3 fallback search where merged_by is omitted)
+    if repo_owner and author and repo_owner != author:
+        return 40, None
+
+    return 0, "Unverified merger: No independent merger recorded (0/40 pts)"
 
 
 def calculate_review_engagement(pr: Dict[str, Any]) -> Tuple[int, Optional[str]]:
@@ -138,31 +151,42 @@ def calculate_repo_trust(pr: Dict[str, Any]) -> Tuple[int, Optional[str]]:
     """
     20% Repo trust:
       - Penalize if repo_owner == author AND repo was created within 7 days of the PR (0 pts).
-      - Independent repos get full points (20 pts).
+      - Independent repos get full points (20 pts), unless created < 7 days before PR or unestablished fork.
       - Self-owned repos established > 7 days before the PR get partial points (10 pts).
     Returns (score, loss_reason).
     """
     author = (pr.get("author") or "").strip().lower()
     repo_owner = (pr.get("repo_owner") or "").strip().lower()
-
     is_self_owned = bool(author and repo_owner and author == repo_owner)
-    if not is_self_owned:
-        return 20, None
 
     repo_created_at = _parse_iso(pr.get("repo_created_at"))
     pr_created_at = _parse_iso(pr.get("created_at"))
 
+    if is_self_owned:
+        if repo_created_at and pr_created_at:
+            age_seconds = (pr_created_at - repo_created_at).total_seconds()
+            age_days = age_seconds / 86400.0
+            if 0 <= age_days < 7.0:
+                return 0, f"Untrusted repo: Self-owned repository created within 7 days of PR ({age_days:.1f} days old, 0/20 pts)"
+            elif age_days < 0:
+                return 0, "Untrusted repo: Inconsistent repo creation timestamp (0/20 pts)"
+            else:
+                return 10, "Self-owned repository established > 7 days before PR (10/20 pts)"
+
+        return 0, "Untrusted repo: Self-owned repository with unverified creation date (0/20 pts)"
+
+    # Third-party / external repository: verify it's not a fresh alt throwaway (< 7 days old)
     if repo_created_at and pr_created_at:
         age_seconds = (pr_created_at - repo_created_at).total_seconds()
         age_days = age_seconds / 86400.0
         if 0 <= age_days < 7.0:
-            return 0, f"Untrusted repo: Self-owned repository created within 7 days of PR ({age_days:.1f} days old, 0/20 pts)"
-        elif age_days < 0:
-            return 0, "Untrusted repo: Inconsistent repo creation timestamp (0/20 pts)"
-        else:
-            return 10, "Self-owned repository established > 7 days before PR (10/20 pts)"
+            return 4, f"Untrusted repo: External repository created within 7 days of PR ({age_days:.1f} days old, suspected alt throwaway, 4/20 pts)"
 
-    return 0, "Untrusted repo: Self-owned repository with unverified creation date (0/20 pts)"
+    # If repo is an unestablished fork with 0 stars
+    if pr.get("repo_is_fork") and int(pr.get("repo_stars") or 0) == 0:
+        return 10, "External fork with zero community stars (10/20 pts)"
+
+    return 20, None
 
 
 class ScoreResult(dict):
@@ -550,7 +574,7 @@ def score_repo_prs(repo: str, prs: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Lead contributors ranked in this repo
     lead_contributors = list(contributor_map.values())
     for c in lead_contributors:
-        c["points_in_repo"] = round(c["points_in_repo"], 1)
+        c["points_in_repo"] = int(round(c["points_in_repo"]))
     lead_contributors.sort(key=lambda x: (x["points_in_repo"], x["merged_in_repo"]), reverse=True)
 
     for idx, c in enumerate(lead_contributors, start=1):

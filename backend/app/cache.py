@@ -2,6 +2,7 @@
 SQLite cache for GitHub API responses.
 Caches raw PR data by (username, since, until) and (repo, since, until)
 so repeated requests do not re-query GitHub within the event window.
+Configured with WAL mode and 30-second busy timeout to eliminate write concurrency contention.
 """
 
 import json
@@ -14,13 +15,15 @@ logger = logging.getLogger(__name__)
 
 def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     path = db_path or settings.CACHE_DB_PATH
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db(db_path: Optional[str] = None) -> None:
-    """Initialize the cache schema if it does not already exist."""
+    """Initialize the cache schema and configure WAL mode for high concurrency."""
     with get_connection(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS pr_cache (

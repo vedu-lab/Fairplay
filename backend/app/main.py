@@ -5,12 +5,14 @@ Provides:
   - GET /api/health: Service status & configured token info
   - GET /api/leaderboard: Audited, scored, anti-gaming PR leaderboard with graphical analysis metrics
   - GET /api/repo/audit: Track target repository changelog and lead contributors
-  - Single-process deployment: Serves built Vite/React frontend from frontend/dist
+  - Single-process deployment: Serves built Vite/React frontend from frontend/dist securely (path-traversal hardened)
 """
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -63,6 +65,39 @@ def _extract_token(request: Request, x_github_token: Optional[str] = None) -> Op
             return sanitized_auth
     return None
 
+
+def _validate_date_window(since: Optional[str], until: Optional[str]) -> Tuple[str, str]:
+    """Validates date format and ensures since <= until."""
+    date_regex = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    since_str = (since or "").strip()
+    until_str = (until or "").strip()
+
+    if since_str and not date_regex.match(since_str):
+        raise HTTPException(status_code=400, detail=f"Invalid 'since' date format '{since_str}'. Must be YYYY-MM-DD.")
+    if until_str and not date_regex.match(until_str):
+        raise HTTPException(status_code=400, detail=f"Invalid 'until' date format '{until_str}'. Must be YYYY-MM-DD.")
+
+    if since_str and until_str:
+        try:
+            d_since = datetime.strptime(since_str, "%Y-%m-%d")
+            d_until = datetime.strptime(until_str, "%Y-%m-%d")
+            if d_since > d_until:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Start date 'since' ({since_str}) cannot be after end date 'until' ({until_str}).",
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid calendar date: {exc}")
+
+    return since_str, until_str
+
+
+def _validate_username(username: str) -> str:
+    """Validates GitHub username format."""
+    clean = username.strip()
+    if not clean or not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$", clean) or len(clean) > 39:
+        raise HTTPException(status_code=400, detail=f"Invalid GitHub username '{clean}'. Must be alphanumeric with single hyphens.")
+    return clean
 
 
 class TokenVerifyRequest(BaseModel):
@@ -128,12 +163,12 @@ async def get_leaderboard(
     Returns ranked leaderboard with transparent per-PR rubric breakdowns,
     loss analysis, and gaming flags.
     """
-    user_list = [u.strip() for u in usernames.split(",") if u.strip()]
-    if not user_list:
+    raw_list = [u.strip() for u in usernames.split(",") if u.strip()]
+    if not raw_list:
         raise HTTPException(status_code=400, detail="At least one valid GitHub username must be provided.")
 
-    since_str = since.strip() if since else ""
-    until_str = until.strip() if until else ""
+    user_list = [_validate_username(u) for u in raw_list]
+    since_str, until_str = _validate_date_window(since, until)
     token = _extract_token(request, x_github_token)
 
     tasks = [
@@ -149,7 +184,7 @@ async def get_leaderboard(
         elif isinstance(res, Exception):
             continue
 
-    leaderboard.sort(key=lambda x: (x.get("total_score", 0.0), x.get("pr_count", 0)), reverse=True)
+    leaderboard.sort(key=lambda x: (x.get("total_score", 0), x.get("pr_count", 0)), reverse=True)
 
     for index, entry in enumerate(leaderboard, start=1):
         entry["rank"] = index
@@ -171,11 +206,10 @@ async def get_repo_audit(
     Returns changelog and lead contributors taking the lead in this specific repository.
     """
     clean_repo = repo.strip()
-    if not clean_repo or "/" not in clean_repo:
-        raise HTTPException(status_code=400, detail="Target repository must be in 'owner/repo' format.")
+    if not clean_repo or not re.match(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$", clean_repo):
+        raise HTTPException(status_code=400, detail="Target repository must be in 'owner/repo' format (e.g. 'facebook/react').")
 
-    since_str = since.strip() if since else ""
-    until_str = until.strip() if until else ""
+    since_str, until_str = _validate_date_window(since, until)
     token = _extract_token(request, x_github_token)
 
     cached_prs = None if force_refresh else get_cached_repo_prs(clean_repo, since_str, until_str)
@@ -188,17 +222,21 @@ async def get_repo_audit(
 
 
 # ═══════════════════════════════════════════════════════════════
-# SINGLE PROCESS FRONTEND STATIC SERVING
+# SINGLE PROCESS FRONTEND STATIC SERVING (HARDENED AGAINST PATH TRAVERSAL)
 # ═══════════════════════════════════════════════════════════════
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-DIST_DIR = ROOT_DIR / "frontend" / "dist"
+DIST_DIR = (ROOT_DIR / "frontend" / "dist").resolve()
 
 if DIST_DIR.exists() and (DIST_DIR / "index.html").exists():
     app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        file_path = DIST_DIR / full_path
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
+        try:
+            # Resolve candidate path and verify it stays strictly inside DIST_DIR
+            candidate = (DIST_DIR / full_path).resolve()
+            if candidate.is_relative_to(DIST_DIR) and candidate.is_file():
+                return FileResponse(candidate)
+        except Exception:
+            pass
         return FileResponse(DIST_DIR / "index.html")

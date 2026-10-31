@@ -73,6 +73,11 @@ export default function Leaderboard({
       return;
     }
 
+    if (since && until && since > until) {
+      setError(`Start date (${since}) cannot be after end date (${until}).`);
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
