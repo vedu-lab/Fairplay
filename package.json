@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "cd frontend && npm install && npm run build"
+    "build": "unset npm_config_cache_dir && cd frontend && npm install && npm run build && cd .. && rm -rf public && cp -r frontend/dist public && cp frontend/dist/index.html public/404.html"
   }
 }

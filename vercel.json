@@ -1,14 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd frontend && npm install && npm run build && cd .. && rm -rf public && cp -r frontend/dist public",
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    },
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
-    }
-  ]
+  "buildCommand": "unset npm_config_cache_dir && cd frontend && npm install && npm run build && cd .. && rm -rf public && cp -r frontend/dist public && cp frontend/dist/index.html public/404.html"
 }
