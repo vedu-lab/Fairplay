@@ -1,23 +1,34 @@
 """
 FastAPI application entry point for FairPlay.
 Provides:
-  - GET /api/health: Service status
-  - GET /api/leaderboard: Audited, scored, anti-gaming PR leaderboard
+  - POST /api/verify-token: Validates GitHub PAT and returns user & rate limit details
+  - GET /api/health: Service status & configured token info
+  - GET /api/leaderboard: Audited, scored, anti-gaming PR leaderboard with graphical analysis metrics
+  - GET /api/repo/audit: Track target repository changelog and lead contributors
   - Single-process deployment: Serves built Vite/React frontend from frontend/dist
 """
 
 import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from .cache import get_cached_prs, init_db, set_cached_prs
+from .cache import (
+    cached_fetch_repo_prs,
+    cached_fetch_user_prs,
+    get_cached_prs,
+    get_cached_repo_prs,
+    init_db,
+    set_cached_prs,
+    set_cached_repo_prs,
+)
 from .config import settings
-from .github_client import fetch_user_prs
-from .scoring import score_user_prs
+from .github_client import fetch_repo_prs, fetch_user_prs, verify_github_token
+from .scoring import score_repo_prs, score_user_prs
 
 app = FastAPI(
     title="FairPlay Anti-Gaming PR Leaderboard",
@@ -25,7 +36,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Enable CORS for local development (e.g. Vite dev server)
+# Enable CORS for local development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,6 +51,33 @@ async def on_startup():
     init_db()
 
 
+def _extract_token(request: Request, x_github_token: Optional[str] = None) -> Optional[str]:
+    """Extract custom GitHub token from header if supplied, else fallback to settings."""
+    sanitized_header = settings.sanitize_github_token(x_github_token)
+    if sanitized_header and sanitized_header != "default":
+        return sanitized_header
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        sanitized_auth = settings.sanitize_github_token(auth_header[7:])
+        if sanitized_auth and sanitized_auth != "default":
+            return sanitized_auth
+    return None
+
+
+
+class TokenVerifyRequest(BaseModel):
+    token: Optional[str] = ""
+
+
+@app.post("/api/verify-token")
+async def verify_token_endpoint(body: TokenVerifyRequest):
+    """
+    Verifies a GitHub PAT and returns authenticated identity and rate limit quotas.
+    """
+    result = await verify_github_token(body.token)
+    return result
+
+
 @app.get("/api/health")
 async def health_check():
     return {
@@ -50,7 +88,7 @@ async def health_check():
 
 
 async def _process_user(
-    username: str, since: str, until: str, force_refresh: bool
+    username: str, since: str, until: str, force_refresh: bool, token: Optional[str] = None
 ) -> Dict[str, Any]:
     clean_user = username.strip()
     if not clean_user:
@@ -58,14 +96,8 @@ async def _process_user(
 
     # Check SQLite cache
     cached_prs = None if force_refresh else get_cached_prs(clean_user, since, until)
-
-    if cached_prs is not None:
-        prs = cached_prs
-        from_cache = True
-    else:
-        prs = await fetch_user_prs(clean_user, since, until)
-        set_cached_prs(clean_user, since, until, prs)
-        from_cache = False
+    from_cache = cached_prs is not None
+    prs = await cached_fetch_user_prs(clean_user, since, until, token=token, force_refresh=force_refresh)
 
     result = score_user_prs(clean_user, prs)
     result["cached"] = from_cache
@@ -74,6 +106,7 @@ async def _process_user(
 
 @app.get("/api/leaderboard")
 async def get_leaderboard(
+    request: Request,
     usernames: str = Query(
         ...,
         description="Comma-separated GitHub usernames (e.g. 'vedu-lab,octocat')",
@@ -88,10 +121,12 @@ async def get_leaderboard(
     force_refresh: bool = Query(
         False, description="Set true to bypass local SQLite cache and re-query GitHub"
     ),
+    x_github_token: Optional[str] = Header(None, alias="X-GitHub-Token"),
 ):
     """
     Audit and score PRs for the given users across the event window.
-    Returns ranked leaderboard with transparent per-PR rubric breakdowns and gaming flags.
+    Returns ranked leaderboard with transparent per-PR rubric breakdowns,
+    loss analysis, and gaming flags.
     """
     user_list = [u.strip() for u in usernames.split(",") if u.strip()]
     if not user_list:
@@ -99,10 +134,10 @@ async def get_leaderboard(
 
     since_str = since.strip() if since else ""
     until_str = until.strip() if until else ""
+    token = _extract_token(request, x_github_token)
 
-    # Concurrently fetch & score across all submitted participants
     tasks = [
-        _process_user(u, since_str, until_str, force_refresh)
+        _process_user(u, since_str, until_str, force_refresh, token=token)
         for u in user_list
     ]
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -112,23 +147,49 @@ async def get_leaderboard(
         if isinstance(res, dict) and res:
             leaderboard.append(res)
         elif isinstance(res, Exception):
-            # Log exception, don't crash entire leaderboard
             continue
 
-    # Sort leaderboard by total_score descending, then pr_count descending
     leaderboard.sort(key=lambda x: (x.get("total_score", 0.0), x.get("pr_count", 0)), reverse=True)
 
-    # Assign sequential ranks
     for index, entry in enumerate(leaderboard, start=1):
         entry["rank"] = index
 
     return leaderboard
 
 
+@app.get("/api/repo/audit")
+async def get_repo_audit(
+    request: Request,
+    repo: str = Query(..., description="Target repository in format 'owner/repo' (e.g. 'facebook/react')"),
+    since: Optional[str] = Query(None, description="Start date of hackathon window (YYYY-MM-DD)"),
+    until: Optional[str] = Query(None, description="End date of hackathon window (YYYY-MM-DD)"),
+    force_refresh: bool = Query(False, description="Set true to bypass local cache"),
+    x_github_token: Optional[str] = Header(None, alias="X-GitHub-Token"),
+):
+    """
+    Audit all PRs submitted to a target repository.
+    Returns changelog and lead contributors taking the lead in this specific repository.
+    """
+    clean_repo = repo.strip()
+    if not clean_repo or "/" not in clean_repo:
+        raise HTTPException(status_code=400, detail="Target repository must be in 'owner/repo' format.")
+
+    since_str = since.strip() if since else ""
+    until_str = until.strip() if until else ""
+    token = _extract_token(request, x_github_token)
+
+    cached_prs = None if force_refresh else get_cached_repo_prs(clean_repo, since_str, until_str)
+    from_cache = cached_prs is not None
+    prs = await cached_fetch_repo_prs(clean_repo, since_str, until_str, token=token, force_refresh=force_refresh)
+
+    result = score_repo_prs(clean_repo, prs)
+    result["cached"] = from_cache
+    return result
+
+
 # ═══════════════════════════════════════════════════════════════
 # SINGLE PROCESS FRONTEND STATIC SERVING
 # ═══════════════════════════════════════════════════════════════
-# Locate frontend/dist relative to project root or backend folder
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DIST_DIR = ROOT_DIR / "frontend" / "dist"
 

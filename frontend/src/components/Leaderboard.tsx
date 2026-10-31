@@ -25,12 +25,24 @@ import {
   FileCode2,
   Database,
   ArrowUpDown,
+  TrendingUp,
+  TrendingDown,
+  ArrowRight,
+  Eye,
 } from 'lucide-react';
 
 type SortField = 'rank' | 'score' | 'prs' | 'flags' | 'username';
 type SortOrder = 'asc' | 'desc';
 
-export default function Leaderboard() {
+interface LeaderboardProps {
+  onSelectContributor?: (contributor: LeaderboardEntry) => void;
+  customToken?: string;
+}
+
+export default function Leaderboard({
+  onSelectContributor,
+  customToken,
+}: LeaderboardProps) {
   const [usernamesInput, setUsernamesInput] = useState<string>('vedu-lab, torvalds, octocat');
   const [sinceDate, setSinceDate] = useState<string>('2026-08-01');
   const [untilDate, setUntilDate] = useState<string>('2026-10-31');
@@ -48,7 +60,7 @@ export default function Leaderboard() {
   // Initial load
   useEffect(() => {
     handleFetch();
-  }, []);
+  }, [customToken]);
 
   const handleFetch = async (overrideUsers?: string, overrideSince?: string, overrideUntil?: string) => {
     const rawUsers = overrideUsers !== undefined ? overrideUsers : usernamesInput;
@@ -70,11 +82,9 @@ export default function Leaderboard() {
         since,
         until,
         forceRefresh,
+        customToken,
       });
       setLeaderboard(data);
-      if (data.length > 0 && !expandedUser) {
-        setExpandedUser(data[0].username);
-      }
     } catch (err: any) {
       setError(err.message || 'Failed to fetch leaderboard data.');
       setLeaderboard([]);
@@ -90,8 +100,17 @@ export default function Leaderboard() {
     handleFetch(users, since, until);
   };
 
-  const toggleExpand = (username: string) => {
+  const toggleExpand = (username: string, e: React.MouseEvent) => {
+    e.stopPropagation();
     setExpandedUser((prev) => (prev === username ? null : username));
+  };
+
+  const handleRowClick = (user: LeaderboardEntry) => {
+    if (onSelectContributor) {
+      onSelectContributor(user);
+    } else {
+      setExpandedUser((prev) => (prev === user.username ? null : user.username));
+    }
   };
 
   const handleSort = (field: SortField) => {
@@ -126,8 +145,8 @@ export default function Leaderboard() {
   return (
     <div className="w-full max-w-7xl mx-auto space-y-6">
       {/* Search & Audit Controls */}
-      <section className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl backdrop-blur-md">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5 border-b border-slate-700/60 pb-4">
+      <section className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-md">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5 border-b border-slate-800 pb-4">
           <div>
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-indigo-400" />
@@ -149,10 +168,10 @@ export default function Leaderboard() {
             </button>
             <button
               type="button"
-              onClick={() => handlePreset('vedu-lab', '2026-08-01', '2026-10-31')}
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-700/70 hover:bg-slate-700 text-slate-300 border border-slate-600 transition"
+              onClick={() => handlePreset('vedu-lab, gaearon, sveltejs', '2026-08-01', '2026-10-31')}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
             >
-              Local Test (vedu-lab)
+              Open Source Frontliners
             </button>
           </div>
         </div>
@@ -164,41 +183,42 @@ export default function Leaderboard() {
           }}
           className="space-y-4"
         >
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-            <div className="md:col-span-6">
-              <label className="block text-xs font-medium text-slate-300 uppercase tracking-wider mb-1.5">
-                GitHub Usernames (comma-separated)
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="md:col-span-1">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+                Participant GitHub Usernames
               </label>
               <input
                 type="text"
                 value={usernamesInput}
                 onChange={(e) => setUsernamesInput(e.target.value)}
-                placeholder="e.g. vedu-lab, octocat, torvalds"
-                className="w-full px-4 py-2.5 bg-slate-900/90 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono text-sm"
+                placeholder="alice, bob, charlie"
+                className="w-full px-3.5 py-2.5 bg-slate-950/80 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-mono"
               />
+              <p className="text-[11px] text-slate-500 mt-1">Comma-separated GitHub handles (no OAuth required).</p>
             </div>
 
-            <div className="md:col-span-3">
-              <label className="block text-xs font-medium text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-indigo-400" /> Since Date
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+                Event Window Start (Since)
               </label>
               <input
                 type="date"
                 value={sinceDate}
                 onChange={(e) => setSinceDate(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-slate-900/90 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                className="w-full px-3.5 py-2.5 bg-slate-950/80 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
               />
             </div>
 
-            <div className="md:col-span-3">
-              <label className="block text-xs font-medium text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-indigo-400" /> Until Date
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+                Event Window End (Until)
               </label>
               <input
                 type="date"
                 value={untilDate}
                 onChange={(e) => setUntilDate(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-slate-900/90 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                className="w-full px-3.5 py-2.5 bg-slate-950/80 border border-slate-700 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
               />
             </div>
           </div>
@@ -229,8 +249,8 @@ export default function Leaderboard() {
       {/* Metrics Header Cards */}
       {leaderboard.length > 0 && !loading && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 flex items-center gap-3">
-            <div className="p-2.5 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               <Award className="w-5 h-5" />
             </div>
             <div>
@@ -239,8 +259,8 @@ export default function Leaderboard() {
             </div>
           </div>
 
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 flex items-center gap-3">
-            <div className="p-2.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
               <GitPullRequest className="w-5 h-5" />
             </div>
             <div>
@@ -249,8 +269,8 @@ export default function Leaderboard() {
             </div>
           </div>
 
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 flex items-center gap-3">
-            <div className="p-2.5 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20">
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
               <ShieldAlert className="w-5 h-5" />
             </div>
             <div>
@@ -259,8 +279,8 @@ export default function Leaderboard() {
             </div>
           </div>
 
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 flex items-center gap-3">
-            <div className="p-2.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
@@ -278,9 +298,6 @@ export default function Leaderboard() {
           <div className="flex-1">
             <h4 className="font-semibold text-rose-300">Audit Request Failed</h4>
             <p className="text-sm mt-1 text-rose-200/90">{error}</p>
-            <p className="text-xs mt-2 text-rose-300/70">
-              Tip: Verify that GITHUB_TOKEN is properly configured in <code className="bg-rose-900/60 px-1 py-0.5 rounded">backend/.env</code> and that the usernames exist on GitHub.
-            </p>
           </div>
           <button
             onClick={() => handleFetch()}
@@ -291,62 +308,51 @@ export default function Leaderboard() {
         </div>
       )}
 
-      {/* Leaderboard Section */}
-      <section className="bg-slate-800/90 border border-slate-700/80 rounded-2xl shadow-xl overflow-hidden backdrop-blur-md">
-        <div className="p-5 border-b border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <h3 className="text-lg font-bold text-white">Audited Leaderboard</h3>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-700 text-slate-300 font-mono">
-              {filteredEntries.length} {filteredEntries.length === 1 ? 'participant' : 'participants'}
-            </span>
+      {/* Leaderboard Table Section */}
+      <section className="bg-slate-900/90 border border-slate-800 rounded-3xl shadow-xl overflow-hidden backdrop-blur-md">
+        <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-3">
+              <h3 className="text-lg font-bold text-white">Audited Leaderboard</h3>
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+                {filteredEntries.length} {filteredEntries.length === 1 ? 'participant' : 'participants'}
+              </span>
+            </div>
+            <p className="text-xs text-indigo-400 mt-1 flex items-center gap-1.5 font-medium">
+              <Info className="w-3.5 h-3.5" />
+              <span>Touch or click any row to inspect deep graphical analysis of points gained vs lost.</span>
+            </p>
           </div>
 
-          <div className="relative">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <div className="relative w-full sm:w-64">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
-              placeholder="Filter by username..."
-              className="pl-9 pr-4 py-1.5 bg-slate-900/80 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-56"
+              placeholder="Search participants..."
+              className="w-full pl-9 pr-4 py-2 bg-slate-950/90 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
             />
           </div>
         </div>
 
-        {/* Loading State */}
-        {loading && (
-          <div className="p-12 text-center space-y-4">
-            <div className="inline-flex p-3 rounded-2xl bg-indigo-500/10 text-indigo-400 animate-pulse">
-              <RefreshCw className="w-8 h-8 animate-spin" />
-            </div>
-            <div>
-              <p className="text-base font-semibold text-white">Analyzing GitHub Pull Requests...</p>
-              <p className="text-xs text-slate-400 mt-1">
-                Evaluating merge legitimacy, review engagement, diff substance, and repo trust metrics.
-              </p>
-            </div>
+        {loading ? (
+          <div className="py-16 text-center space-y-3">
+            <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin mx-auto" />
+            <p className="text-sm text-slate-300 font-medium">Auditing contributions via GitHub GraphQL v4...</p>
+            <p className="text-xs text-slate-500">Checking merge legitimacy, code reviews, and repo history</p>
           </div>
-        )}
-
-        {/* Empty State */}
-        {!loading && !error && filteredEntries.length === 0 && (
-          <div className="p-12 text-center space-y-3">
-            <div className="inline-flex p-3 rounded-2xl bg-slate-700/40 text-slate-400">
-              <Info className="w-8 h-8" />
-            </div>
-            <p className="text-base font-semibold text-slate-300">No PR records found</p>
-            <p className="text-xs text-slate-400 max-w-md mx-auto">
-              Either the specified users opened zero pull requests in this date range, or the usernames were not found. Try expanding the date window or using the presets above.
-            </p>
+        ) : filteredEntries.length === 0 ? (
+          <div className="py-16 text-center space-y-2">
+            <Info className="w-8 h-8 text-slate-500 mx-auto" />
+            <p className="text-sm text-slate-300 font-medium">No leaderboard entries found</p>
+            <p className="text-xs text-slate-500">Configure usernames above and run the audit.</p>
           </div>
-        )}
-
-        {/* Table Content */}
-        {!loading && filteredEntries.length > 0 && (
+        ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-slate-700/80 bg-slate-900/50 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                <tr className="border-b border-slate-800 bg-slate-950/50 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                   <th
                     onClick={() => handleSort('rank')}
                     className="py-3 px-4 cursor-pointer hover:text-white transition select-none w-20 text-center"
@@ -387,10 +393,10 @@ export default function Leaderboard() {
                       Gaming Audit <ArrowUpDown className="w-3 h-3" />
                     </span>
                   </th>
-                  <th className="py-3 px-4 text-center w-24">Details</th>
+                  <th className="py-3 px-4 text-center w-36">Graphical Analysis</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-700/60 text-sm">
+              <tbody className="divide-y divide-slate-800 text-sm">
                 {filteredEntries.map((user) => {
                   const isExpanded = expandedUser === user.username;
                   const rankBadge =
@@ -407,9 +413,9 @@ export default function Leaderboard() {
                   return (
                     <React.Fragment key={user.username}>
                       <tr
-                        onClick={() => toggleExpand(user.username)}
-                        className={`cursor-pointer transition-colors ${
-                          isExpanded ? 'bg-indigo-950/20' : 'hover:bg-slate-700/30'
+                        onClick={() => handleRowClick(user)}
+                        className={`cursor-pointer transition-colors group ${
+                          isExpanded ? 'bg-indigo-950/20' : 'hover:bg-slate-800/40'
                         }`}
                       >
                         <td className="py-4 px-4 text-center">{rankBadge}</td>
@@ -419,13 +425,13 @@ export default function Leaderboard() {
                             <img
                               src={`https://github.com/${user.username}.png?size=40`}
                               alt={user.username}
-                              className="w-8 h-8 rounded-full border border-slate-600 bg-slate-800"
+                              className="w-9 h-9 rounded-full border border-slate-700 bg-slate-800"
                               onError={(e) => {
                                 (e.target as HTMLElement).style.display = 'none';
                               }}
                             />
                             <div>
-                              <div className="font-semibold text-white flex items-center gap-1.5">
+                              <div className="font-semibold text-white group-hover:text-indigo-300 transition flex items-center gap-1.5">
                                 <span>{user.username}</span>
                                 <a
                                   href={`https://github.com/${user.username}`}
@@ -438,9 +444,15 @@ export default function Leaderboard() {
                                 </a>
                               </div>
                               <div className="text-xs text-slate-400 flex items-center gap-2">
-                                {user.cached && (
-                                  <span className="inline-flex items-center gap-1 text-[10px] text-slate-500 font-mono">
-                                    <Database className="w-2.5 h-2.5" /> cached
+                                {user.verdict ? (
+                                  <span className={`text-[10px] font-medium ${
+                                    user.flagged_count > 0 ? 'text-rose-400' : 'text-emerald-400'
+                                  }`}>
+                                    {user.verdict}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-slate-500 font-mono">
+                                    {user.cached ? 'cached' : 'live'}
                                   </span>
                                 )}
                               </div>
@@ -460,7 +472,7 @@ export default function Leaderboard() {
                         </td>
 
                         <td className="py-4 px-4 text-center">
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-700 text-slate-200 font-mono">
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-800 text-slate-200 font-mono border border-slate-700">
                             {user.pr_count}
                           </span>
                         </td>
@@ -482,31 +494,42 @@ export default function Leaderboard() {
                         <td className="py-4 px-4 text-center">
                           <button
                             type="button"
-                            aria-label="Toggle details"
-                            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/60 transition"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (onSelectContributor) {
+                                onSelectContributor(user);
+                              } else {
+                                toggleExpand(user.username, e);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 font-semibold text-xs transition shadow-sm"
                           >
-                            {isExpanded ? (
-                              <ChevronUp className="w-5 h-5 text-indigo-400" />
-                            ) : (
-                              <ChevronDown className="w-5 h-5" />
-                            )}
+                            <span>Inspect</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
                           </button>
                         </td>
                       </tr>
 
-                      {/* Expandable Rubric & PR Audit View */}
+                      {/* Expandable Preview */}
                       {isExpanded && (
-                        <tr className="bg-slate-900/60">
-                          <td colSpan={6} className="p-5 border-y border-slate-700/70">
+                        <tr className="bg-slate-950/60">
+                          <td colSpan={6} className="p-5 border-y border-slate-800">
                             <div className="space-y-4">
                               <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                                 <h4 className="text-sm font-bold text-white flex items-center gap-2">
                                   <GitPullRequest className="w-4 h-4 text-indigo-400" />
                                   Audited PR Contributions for @{user.username}
                                 </h4>
-                                <span className="text-xs text-slate-400">
-                                  {user.prs.length} pull request{user.prs.length !== 1 ? 's' : ''} reviewed
-                                </span>
+                                {onSelectContributor && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onSelectContributor(user)}
+                                    className="px-3 py-1 rounded-lg bg-indigo-600 text-white font-semibold text-xs flex items-center gap-1 hover:bg-indigo-500 transition"
+                                  >
+                                    <span>Open Full Graphical Breakdown</span>
+                                    <ArrowRight className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
 
                               {user.prs.length === 0 ? (
@@ -514,7 +537,7 @@ export default function Leaderboard() {
                                   No pull requests recorded in the configured event date window.
                                 </p>
                               ) : (
-                                <div className="space-y-4">
+                                <div className="space-y-3">
                                   {user.prs.map((pr: PRItem) => (
                                     <PRCard key={`${pr.repo}-${pr.number}`} pr={pr} />
                                   ))}
@@ -537,7 +560,7 @@ export default function Leaderboard() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// INDIVIDUAL PR AUDIT CARD WITH 4-SIGNAL RUBRIC
+// INDIVIDUAL PR AUDIT CARD
 // ═══════════════════════════════════════════════════════════════
 function PRCard({ pr }: { pr: PRItem }) {
   const isSelfMerged = pr.merged && pr.merged_by && pr.merged_by === pr.author;
@@ -548,10 +571,9 @@ function PRCard({ pr }: { pr: PRItem }) {
       className={`rounded-xl border p-4 transition ${
         pr.flagged
           ? 'bg-rose-950/20 border-rose-700/50'
-          : 'bg-slate-800/80 border-slate-700/70'
+          : 'bg-slate-900/80 border-slate-800'
       }`}
     >
-      {/* PR Header */}
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-3">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -575,7 +597,6 @@ function PRCard({ pr }: { pr: PRItem }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-            {/* Merge Status Tag */}
             {isLegitMerged ? (
               <span className="inline-flex items-center gap-1 text-emerald-400 font-medium">
                 <CheckCircle2 className="w-3.5 h-3.5" />
@@ -595,7 +616,6 @@ function PRCard({ pr }: { pr: PRItem }) {
 
             <span>•</span>
             <span>Opened {pr.created_at ? new Date(pr.created_at).toLocaleDateString() : 'N/A'}</span>
-
             <span>•</span>
             <span className="font-mono text-emerald-400">+{pr.additions}</span>
             <span className="font-mono text-rose-400">-{pr.deletions}</span>
@@ -603,7 +623,6 @@ function PRCard({ pr }: { pr: PRItem }) {
           </div>
         </div>
 
-        {/* PR Total Score */}
         <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-1">
           <div className="flex items-baseline gap-1">
             <span className="text-xl font-bold font-mono text-white">{pr.score.toFixed(1)}</span>
@@ -613,114 +632,42 @@ function PRCard({ pr }: { pr: PRItem }) {
         </div>
       </div>
 
-      {/* Gaming Detection Alert Banner */}
       {pr.flagged && (
         <div className="mb-4 p-3 rounded-lg bg-rose-950/50 border border-rose-600/60 text-rose-200 text-xs flex items-start gap-2.5">
           <ShieldAlert className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <span className="font-bold text-rose-300 uppercase tracking-wider text-[10px]">
-              Gaming Pattern Flagged
-            </span>
-            <p className="text-rose-100/90 leading-relaxed font-sans">{pr.flag_reason}</p>
+            <p className="font-bold text-rose-300">Gaming Pattern Detected</p>
+            <p className="font-mono text-[11px] leading-relaxed">
+              {pr.flag_reason || (pr.flag_reasons && pr.flag_reasons.join(' | '))}
+            </p>
           </div>
         </div>
       )}
 
-      {/* Transparent 4-Signal Breakdown Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-slate-700/50 text-xs">
-        {/* 1. Merge Legitimacy (40%) */}
-        <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-700/50 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-slate-400 flex items-center gap-1 font-medium">
-              <GitMerge className="w-3.5 h-3.5 text-indigo-400" /> Merge Legitimacy
-            </span>
-            <span className="font-mono font-bold text-white">
-              {pr.breakdown.merge_legitimacy.toFixed(0)} <span className="text-slate-500">/ 40</span>
-            </span>
-          </div>
-          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-            <div
-              className={`h-full ${
-                pr.breakdown.merge_legitimacy >= 40
-                  ? 'bg-emerald-500'
-                  : pr.breakdown.merge_legitimacy > 0
-                  ? 'bg-amber-500'
-                  : 'bg-rose-500'
-              }`}
-              style={{ width: `${(pr.breakdown.merge_legitimacy / 40) * 100}%` }}
-            />
-          </div>
-          <p className="text-[11px] text-slate-400">
-            {pr.breakdown.merge_legitimacy >= 40
-              ? 'Independent maintainer approved'
-              : isSelfMerged
-              ? 'Zero pts: self-merged PR'
-              : 'Zero pts: unmerged or open'}
+      {/* 4 Rubric Chips */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 pt-2 text-xs">
+        <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+          <span className="text-[10px] uppercase tracking-wider text-slate-400">Merge Legitimacy (40%)</span>
+          <p className="text-sm font-bold text-emerald-400 mt-0.5">
+            {pr.breakdown?.merge_legitimacy ?? 0} <span className="text-slate-500 text-xs">/ 40</span>
           </p>
         </div>
-
-        {/* 2. Review Engagement (20%) */}
-        <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-700/50 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-slate-400 flex items-center gap-1 font-medium">
-              <MessageSquare className="w-3.5 h-3.5 text-blue-400" /> Review Engagement
-            </span>
-            <span className="font-mono font-bold text-white">
-              {pr.breakdown.review_engagement.toFixed(0)} <span className="text-slate-500">/ 20</span>
-            </span>
-          </div>
-          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-            <div
-              className="h-full bg-blue-500"
-              style={{ width: `${(pr.breakdown.review_engagement / 20) * 100}%` }}
-            />
-          </div>
-          <p className="text-[11px] text-slate-400">
-            {pr.review_count} formal review(s), {pr.comment_count} discussion comment(s)
+        <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+          <span className="text-[10px] uppercase tracking-wider text-slate-400">Review Depth (20%)</span>
+          <p className="text-sm font-bold text-indigo-400 mt-0.5">
+            {pr.breakdown?.review_engagement ?? 0} <span className="text-slate-500 text-xs">/ 20</span>
           </p>
         </div>
-
-        {/* 3. Change Substance (20%) */}
-        <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-700/50 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-slate-400 flex items-center gap-1 font-medium">
-              <FileCode2 className="w-3.5 h-3.5 text-amber-400" /> Change Substance
-            </span>
-            <span className="font-mono font-bold text-white">
-              {pr.breakdown.change_substance.toFixed(0)} <span className="text-slate-500">/ 20</span>
-            </span>
-          </div>
-          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-            <div
-              className="h-full bg-amber-500"
-              style={{ width: `${(pr.breakdown.change_substance / 20) * 100}%` }}
-            />
-          </div>
-          <p className="text-[11px] text-slate-400">
-            {pr.additions + pr.deletions} lines touched across {pr.files_changed} file(s)
+        <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+          <span className="text-[10px] uppercase tracking-wider text-slate-400">Substance (20%)</span>
+          <p className="text-sm font-bold text-amber-400 mt-0.5">
+            {pr.breakdown?.change_substance ?? 0} <span className="text-slate-500 text-xs">/ 20</span>
           </p>
         </div>
-
-        {/* 4. Repo Trust (20%) */}
-        <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-700/50 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-slate-400 flex items-center gap-1 font-medium">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Repo Trust
-            </span>
-            <span className="font-mono font-bold text-white">
-              {pr.breakdown.repo_trust.toFixed(0)} <span className="text-slate-500">/ 20</span>
-            </span>
-          </div>
-          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-            <div
-              className="h-full bg-emerald-500"
-              style={{ width: `${(pr.breakdown.repo_trust / 20) * 100}%` }}
-            />
-          </div>
-          <p className="text-[11px] text-slate-400">
-            {pr.repo_owner === pr.author
-              ? 'Self-owned repository'
-              : `${pr.repo_stars}★ community repo`}
+        <div className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800">
+          <span className="text-[10px] uppercase tracking-wider text-slate-400">Repo Trust (20%)</span>
+          <p className="text-sm font-bold text-blue-400 mt-0.5">
+            {pr.breakdown?.repo_trust ?? 0} <span className="text-slate-500 text-xs">/ 20</span>
           </p>
         </div>
       </div>

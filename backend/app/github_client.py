@@ -1,6 +1,6 @@
 """
-GitHub GraphQL client (with REST fallback) for fetching user pull requests
-and associated review, change, and repository metadata.
+GitHub GraphQL client (with REST fallback) for fetching user and repository
+pull requests and associated review, change, and repository metadata.
 """
 
 import logging
@@ -61,6 +61,97 @@ query($queryStr: String!, $cursor: String) {
 """
 
 
+def _check_rate_limit(headers: httpx.Headers) -> None:
+    """Reads X-RateLimit-Remaining from response headers and logs a warning if below 100."""
+    remaining_header = headers.get("X-RateLimit-Remaining")
+    if remaining_header is not None:
+        try:
+            remaining = int(remaining_header)
+            if remaining < 100:
+                logger.warning(
+                    "GitHub API rate limit remaining is low: %d (X-RateLimit-Remaining < 100)",
+                    remaining,
+                )
+        except (ValueError, TypeError):
+            pass
+
+
+def get_headers(custom_token: Optional[str] = None) -> Dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "FairPlay-AntiGaming-Auditor",
+    }
+    clean_custom = settings.sanitize_github_token(custom_token)
+    token = clean_custom if clean_custom and clean_custom != "default" else settings.GITHUB_TOKEN
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+async def verify_github_token(token: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Verifies a GitHub Personal Access Token and retrieves authenticated user
+    profile and current API rate limits.
+    """
+    clean_token = settings.sanitize_github_token(token)
+    effective_token = clean_token if clean_token and clean_token != "default" else settings.GITHUB_TOKEN
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "FairPlay-AntiGaming-Auditor",
+    }
+    if effective_token:
+        headers["Authorization"] = f"Bearer {effective_token}"
+
+
+    async with httpx.AsyncClient(headers=headers, timeout=12.0) as client:
+        try:
+            # 1. Fetch user profile
+            user_resp = await client.get("https://api.github.com/user")
+            _check_rate_limit(user_resp.headers)
+            # 2. Fetch rate limit status
+            rate_resp = await client.get("https://api.github.com/rate_limit")
+            _check_rate_limit(rate_resp.headers)
+
+            if user_resp.status_code == 200:
+                user_data = user_resp.json()
+                rate_data = rate_resp.json() if rate_resp.status_code == 200 else {}
+                core = rate_data.get("resources", {}).get("core", {})
+                graphql = rate_data.get("resources", {}).get("graphql", {})
+
+                return {
+                    "valid": True,
+                    "token_type": "custom" if token and token != "default" else "server_default",
+                    "user": {
+                        "login": user_data.get("login", ""),
+                        "name": user_data.get("name", user_data.get("login", "")),
+                        "avatar_url": user_data.get("avatar_url", ""),
+                        "html_url": user_data.get("html_url", ""),
+                        "public_repos": user_data.get("public_repos", 0),
+                    },
+                    "rate_limit": {
+                        "core_limit": core.get("limit", 5000),
+                        "core_remaining": core.get("remaining", 5000),
+                        "graphql_limit": graphql.get("limit", 5000),
+                        "graphql_remaining": graphql.get("remaining", 5000),
+                    },
+                }
+            elif user_resp.status_code == 401:
+                return {
+                    "valid": False,
+                    "error": "Invalid GitHub Token. Please check that your token starts with ghp_ or github_pat_ and has read permissions.",
+                }
+            else:
+                return {
+                    "valid": False,
+                    "error": f"GitHub API responded with status {user_resp.status_code}: {user_resp.text}",
+                }
+        except Exception as exc:
+            return {
+                "valid": False,
+                "error": f"Failed to reach GitHub API: {str(exc)}",
+            }
+
+
 def _build_search_query(username: str, since: Optional[str] = None, until: Optional[str] = None) -> str:
     parts = ["is:pr", f"author:{username.strip()}"]
     if since and until:
@@ -72,7 +163,19 @@ def _build_search_query(username: str, since: Optional[str] = None, until: Optio
     return " ".join(parts)
 
 
-def _normalize_node(node: Dict[str, Any], default_author: str) -> Dict[str, Any]:
+def _build_repo_search_query(repo: str, since: Optional[str] = None, until: Optional[str] = None) -> str:
+    clean_repo = repo.strip()
+    parts = ["is:pr", f"repo:{clean_repo}"]
+    if since and until:
+        parts.append(f"created:{since.strip()}..{until.strip()}")
+    elif since:
+        parts.append(f"created:>={since.strip()}")
+    elif until:
+        parts.append(f"created:<={until.strip()}")
+    return " ".join(parts)
+
+
+def _normalize_node(node: Dict[str, Any], default_author: str = "") -> Dict[str, Any]:
     author_obj = node.get("author") or {}
     author_login = author_obj.get("login") or default_author
 
@@ -115,29 +218,26 @@ def _normalize_node(node: Dict[str, Any], default_author: str) -> Dict[str, Any]
 
 
 async def _fetch_via_rest_fallback(
-    client: httpx.AsyncClient, username: str, since: Optional[str] = None, until: Optional[str] = None
+    client: httpx.AsyncClient, query_str: str, default_author: str = ""
 ) -> List[Dict[str, Any]]:
     """Fallback to GitHub REST v3 search if GraphQL fails."""
-    q = _build_search_query(username, since, until)
-    response = await client.get(REST_SEARCH_URL, params={"q": q, "per_page": 50})
+    response = await client.get(REST_SEARCH_URL, params={"q": query_str, "per_page": 50})
+    _check_rate_limit(response.headers)
     response.raise_for_status()
     payload = response.json()
     items = payload.get("items", [])
 
     results = []
     for item in items:
-        # Pull Request details from REST search
         pr_url = item.get("html_url", "")
-        # Format repo owner and name from repository_url
         repo_api_url = item.get("repository_url", "")
         repo_parts = repo_api_url.rstrip("/").split("/")
         repo_name = repo_parts[-1] if len(repo_parts) >= 1 else ""
         repo_owner = repo_parts[-2] if len(repo_parts) >= 2 else ""
 
         user_obj = item.get("user") or {}
-        author = user_obj.get("login") or username
+        author = user_obj.get("login") or default_author
 
-        # Pull request object indicated by presence of 'pull_request' key
         is_merged = bool(item.get("pull_request", {}).get("merged_at"))
 
         results.append({
@@ -147,7 +247,7 @@ async def _fetch_via_rest_fallback(
             "created_at": item.get("created_at", ""),
             "merged": is_merged,
             "merged_at": item.get("pull_request", {}).get("merged_at"),
-            "merged_by": None,  # Not directly in issue search
+            "merged_by": None,
             "author": author,
             "review_comment_count": item.get("comments", 0),
             "comment_count": item.get("comments", 0),
@@ -167,7 +267,10 @@ async def _fetch_via_rest_fallback(
 
 
 async def fetch_user_prs(
-    username: str, since: Optional[str] = None, until: Optional[str] = None
+    username: str,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetch all PRs opened by a user in the specified date range.
@@ -177,13 +280,7 @@ async def fetch_user_prs(
     if not clean_user:
         return []
 
-    headers = {
-        "Accept": "application/vnd.github.v4+json",
-        "User-Agent": "FairPlay-AntiGaming-Auditor",
-    }
-    if settings.GITHUB_TOKEN:
-        headers["Authorization"] = f"bearer {settings.GITHUB_TOKEN}"
-
+    headers = get_headers(token)
     search_query = _build_search_query(clean_user, since, until)
     all_prs: List[Dict[str, Any]] = []
 
@@ -192,31 +289,32 @@ async def fetch_user_prs(
             cursor: Optional[str] = None
             has_next = True
 
-            while has_next and len(all_prs) < 100:  # Bound to reasonable hackathon PR count
+            while has_next and len(all_prs) < 100:
                 variables: Dict[str, Any] = {"queryStr": search_query, "cursor": cursor}
                 resp = await client.post(
                     GRAPHQL_URL,
                     json={"query": GRAPHQL_PR_SEARCH_QUERY, "variables": variables},
                 )
+                _check_rate_limit(resp.headers)
 
                 if resp.status_code != 200:
                     logger.warning(
-                        "GraphQL request returned %d: %s. Falling back to REST.",
+                        "GraphQL returned %d for %s. Falling back to REST.",
                         resp.status_code,
-                        resp.text,
+                        clean_user,
                     )
-                    return await _fetch_via_rest_fallback(client, clean_user, since, until)
+                    return await _fetch_via_rest_fallback(client, search_query, clean_user)
 
                 data = resp.json()
                 if "errors" in data and not data.get("data"):
                     logger.warning("GraphQL returned errors: %s. Falling back to REST.", data["errors"])
-                    return await _fetch_via_rest_fallback(client, clean_user, since, until)
+                    return await _fetch_via_rest_fallback(client, search_query, clean_user)
 
                 search_data = data.get("data", {}).get("search", {})
                 nodes = search_data.get("nodes", [])
 
                 for node in nodes:
-                    if node:  # Nodes could be empty or non-PR
+                    if node:
                         all_prs.append(_normalize_node(node, clean_user))
 
                 page_info = search_data.get("pageInfo", {})
@@ -231,7 +329,75 @@ async def fetch_user_prs(
         except Exception as exc:
             logger.error("Error in GraphQL fetch for %s: %s. Attempting REST fallback.", clean_user, exc)
             try:
-                return await _fetch_via_rest_fallback(client, clean_user, since, until)
+                return await _fetch_via_rest_fallback(client, search_query, clean_user)
             except Exception as rest_exc:
                 logger.error("REST fallback also failed for %s: %s", clean_user, rest_exc)
+                return []
+
+
+async def fetch_repo_prs(
+    repo: str,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    token: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch all PRs submitted to a target repository in the specified date range.
+    """
+    clean_repo = repo.strip()
+    if not clean_repo:
+        return []
+
+    headers = get_headers(token)
+    search_query = _build_repo_search_query(clean_repo, since, until)
+    all_prs: List[Dict[str, Any]] = []
+
+    async with httpx.AsyncClient(headers=headers, timeout=25.0) as client:
+        try:
+            cursor: Optional[str] = None
+            has_next = True
+
+            while has_next and len(all_prs) < 100:
+                variables: Dict[str, Any] = {"queryStr": search_query, "cursor": cursor}
+                resp = await client.post(
+                    GRAPHQL_URL,
+                    json={"query": GRAPHQL_PR_SEARCH_QUERY, "variables": variables},
+                )
+                _check_rate_limit(resp.headers)
+
+                if resp.status_code != 200:
+                    logger.warning(
+                        "GraphQL returned %d for repo %s. Falling back to REST.",
+                        resp.status_code,
+                        clean_repo,
+                    )
+                    return await _fetch_via_rest_fallback(client, search_query)
+
+                data = resp.json()
+                if "errors" in data and not data.get("data"):
+                    logger.warning("GraphQL returned errors: %s. Falling back to REST.", data["errors"])
+                    return await _fetch_via_rest_fallback(client, search_query)
+
+                search_data = data.get("data", {}).get("search", {})
+                nodes = search_data.get("nodes", [])
+
+                for node in nodes:
+                    if node:
+                        all_prs.append(_normalize_node(node))
+
+                page_info = search_data.get("pageInfo", {})
+                has_next = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+
+                if not cursor:
+                    break
+
+            return all_prs
+
+        except Exception as exc:
+            logger.error("Error in GraphQL fetch for repo %s: %s. Attempting REST fallback.", clean_repo, exc)
+            try:
+                return await _fetch_via_rest_fallback(client, search_query)
+            except Exception as rest_exc:
+                logger.error("REST fallback also failed for repo %s: %s", clean_repo, rest_exc)
                 return []
